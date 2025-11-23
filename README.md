@@ -79,23 +79,9 @@ Transform your photos into stunning manga pages and western comics using Google'
 
 ### NanoManga in Action
 
-<div align="center">
-
-**Model Selection Screen**
-<!-- Add screenshot here -->
-
-**Character & Style Configuration**
-<!-- Add screenshot here -->
-
-**Generated Manga Page**
-<!-- Add screenshot here -->
-
-**History & Reader Mode**
-<!-- Add screenshot here -->
-
-</div>
-
 > 💡 **Try it online**: [NanoManga Pro on AI Studio](https://ai.studio/apps/drive/1LtWClX9RDAzWskLr4p8TDaqdMwAJLBwj)
+
+*Screenshots and demo videos will be added soon. In the meantime, try the live demo above to see NanoManga in action!*
 
 ---
 
@@ -127,7 +113,9 @@ Transform your photos into stunning manga pages and western comics using Google'
    VITE_GEMINI_API_KEY=your_api_key_here
    ```
    
-   *Note: You can also enter your API key directly in the app interface.*
+   ⚠️ **Security Note**: Never commit your API key to version control. The `.env.local` file is already included in `.gitignore`.
+   
+   *Alternatively: You can enter your API key directly in the app interface.*
 
 4. **Start the development server**
    ```bash

@@ -1,0 +1,5 @@
+{
+  "name": "NanoManga Pro",
+  "description": "Professional manga generation using Gemini 3 Pro Image. Transform photos with high-fidelity style transfer and editing.",
+  "requestFramePermissions": []
+}

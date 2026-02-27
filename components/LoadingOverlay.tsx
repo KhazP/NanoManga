@@ -5,21 +5,49 @@ import { PenTool } from 'lucide-react';
 interface LoadingOverlayProps {
   isVisible: boolean;
   message?: string;
+  progress?: number; // 0 to 100
 }
 
-export const LoadingOverlay: React.FC<LoadingOverlayProps> = ({ isVisible, message }) => {
+export const LoadingOverlay: React.FC<LoadingOverlayProps> = ({ isVisible, message, progress }) => {
   const [textIndex, setTextIndex] = useState(0);
+  const [fakeProgress, setFakeProgress] = useState(0);
   const loadingTexts = ["INKING...", "TONING...", "SHADING...", "FINALIZING..."];
 
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible) {
+      setFakeProgress(0);
+      return;
+    }
+    
     const interval = setInterval(() => {
       setTextIndex((prev) => (prev + 1) % loadingTexts.length);
     }, 800);
-    return () => clearInterval(interval);
-  }, [isVisible]);
+
+    // Fake progress that increments slowly
+    const progressInterval = setInterval(() => {
+      setFakeProgress((prev) => {
+        // If real progress is provided, we want to approach it but not exceed it
+        // If not provided, we just slowly go up to 95%
+        const target = progress !== undefined ? progress : 95;
+        
+        // If we are far from target, move faster. If close, move slower.
+        const diff = target - prev;
+        if (diff > 0) {
+          return prev + Math.max(0.5, diff * 0.05);
+        }
+        return prev;
+      });
+    }, 100);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(progressInterval);
+    };
+  }, [isVisible, progress]);
 
   if (!isVisible) return null;
+
+  const displayProgress = Math.min(100, Math.max(0, fakeProgress));
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/95 overflow-hidden">
@@ -50,7 +78,12 @@ export const LoadingOverlay: React.FC<LoadingOverlayProps> = ({ isVisible, messa
              
              {/* Progressively appearing content (simulated) */}
              <div className="absolute inset-0 flex items-center justify-center">
-               <div className="w-24 h-32 border-2 border-dashed border-gray-300"></div>
+               <div className="w-24 h-32 border-2 border-dashed border-gray-300 relative overflow-hidden">
+                 <div 
+                   className="absolute bottom-0 left-0 right-0 bg-black/10 transition-all duration-300 ease-out" 
+                   style={{ height: `${displayProgress}%` }}
+                 ></div>
+               </div>
              </div>
              
              {/* Scribble Effect */}
@@ -80,9 +113,10 @@ export const LoadingOverlay: React.FC<LoadingOverlayProps> = ({ isVisible, messa
           <div className="relative bg-yellow-400 px-8 py-3 border-2 border-black flex flex-col items-center">
             <h3 className="text-3xl font-comic text-black italic font-black tracking-wider uppercase">
               {message || loadingTexts[textIndex]}
+              {` ${Math.round(displayProgress)}%`}
             </h3>
             <div className="w-full h-1 bg-black mt-1 rounded-full overflow-hidden">
-               <div className="h-full bg-white w-full animate-progress-indeterminate origin-left"></div>
+               <div className="h-full bg-white transition-all duration-300 ease-out" style={{ width: `${displayProgress}%` }}></div>
             </div>
           </div>
         </div>

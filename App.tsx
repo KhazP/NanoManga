@@ -3,8 +3,9 @@ import React, { useState, useEffect } from 'react';
 import { ImageUploader } from './components/ImageUploader';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
-import { generateMangaPage } from './services/geminiService';
-import { GenerationStatus, CharacterDetail } from './types';
+import { FullMangaEditor } from './components/FullMangaEditor';
+import { generateMangaPage, generateFullMangaPage } from './services/geminiService';
+import { GenerationStatus, CharacterDetail, FullMangaCharacter, FullMangaParams } from './types';
 import { 
   Download, RefreshCw, Wand2, PenTool,
   Layout as LayoutIcon, Key,
@@ -130,9 +131,12 @@ const MangaReader = ({
 };
 
 function App() {
+  const [appMode, setAppMode] = useState<'setup' | 'landing' | 'manual' | 'full-manga'>('setup');
+  const [user, setUser] = useState<any>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState<boolean>(false);
-  const [manualApiKey, setManualApiKey] = useState<string>('');
+  const [manualApiKey, setManualApiKey] = useState<string>(localStorage.getItem('gemini_api_key') || '');
   const [isCheckingKey, setIsCheckingKey] = useState(false);
 
   const [mode, setMode] = useState<'manga' | 'history'>('manga');
@@ -157,15 +161,65 @@ function App() {
   const [layoutType, setLayoutType] = useState<'single-page' | 'single-box' | 'two-page'>('single-page');
   
   const [status, setStatus] = useState<GenerationStatus>(GenerationStatus.IDLE);
+  const [generationProgress, setGenerationProgress] = useState<number | undefined>(undefined);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [sessionCost, setSessionCost] = useState(0);
   const PRO_IMAGE_COST = 0.134;
+  const FLASH_IMAGE_COST = 0.0672;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Full Manga State
+  const [fmStoryIntro, setFmStoryIntro] = useState('');
+  const [fmStoryBody, setFmStoryBody] = useState('');
+  const [fmStoryConclusion, setFmStoryConclusion] = useState('');
+  const [fmCharacters, setFmCharacters] = useState<FullMangaCharacter[]>([]);
+  const [fmArtType, setFmArtType] = useState('');
+  const [fmResolution, setFmResolution] = useState<'1K' | '2K' | '4K'>('1K');
+  const [fmPageCount, setFmPageCount] = useState(1);
+  const [fmGeneratedPages, setFmGeneratedPages] = useState<string[]>([]);
+  const [fullMangaHistory, setFullMangaHistory] = useState<import('./types').FullMangaBook[]>([]);
 
   const maxUserImages = selectedModel === 'gemini-3-pro-image-preview' ? 14 : 3;
 
   const currentPresetStyles = styleCategory === 'anime' ? ANIME_STYLES : WESTERN_STYLES;
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+        }
+      } catch (e) {
+        console.error("Auth check failed", e);
+      } finally {
+        setIsAuthChecking(false);
+      }
+    };
+    checkAuth();
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
+        setUser(event.data.user);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthChecking) {
+      const savedKey = localStorage.getItem('gemini_api_key');
+      if (!user || !savedKey || !savedKey.startsWith('AIza')) {
+        setAppMode('setup');
+      } else if (appMode === 'setup') {
+        setAppMode('landing');
+        setHasApiKey(true);
+      }
+    }
+  }, [user, isAuthChecking]);
 
   useEffect(() => {
     if (selectedModel === 'gemini-2.5-flash-image' && userImages.length > 3) {
@@ -183,14 +237,11 @@ function App() {
   const checkApiKey = async () => {
     setIsCheckingKey(true);
     try {
-      if (window.aistudio) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(hasKey);
+      // Force manual key check for all environments
+      if (manualApiKey.length > 10) {
+        setHasApiKey(true);
       } else {
-        // In non-AI Studio environments, check if we have a manual key
-        if (manualApiKey.length > 10) {
-          setHasApiKey(true);
-        }
+        setHasApiKey(false);
       }
     } catch (e) {
       console.error("Error checking API key status", e);
@@ -201,16 +252,11 @@ function App() {
 
   const handleSelectKey = async () => {
     try {
-      if (window.aistudio) {
-        await window.aistudio.openSelectKey();
-        setHasApiKey(true);
+      // If manual key is valid, we just set state
+      if (manualApiKey.length > 10) {
+         setHasApiKey(true);
       } else {
-        // If manual key is valid, we just set state
-        if (manualApiKey.length > 10) {
-           setHasApiKey(true);
-        } else {
-          alert("Please enter a valid Gemini API Key.");
-        }
+        alert("Please enter a valid Gemini API Key.");
       }
     } catch (e) {
       console.error("Error selecting key", e);
@@ -219,13 +265,32 @@ function App() {
   
   const handleManualKeySubmit = () => {
     if (manualApiKey && manualApiKey.startsWith('AIza')) {
+      localStorage.setItem('gemini_api_key', manualApiKey);
       setHasApiKey(true);
+      if (user) {
+        setAppMode('landing');
+      }
     } else {
       alert("Please enter a valid Gemini API Key (starts with AIza)");
     }
   };
 
+  const handleGoogleLogin = async () => {
+    try {
+      const redirectUri = `${window.location.origin}/auth/callback`;
+      const response = await fetch(`/api/auth/url?redirect_uri=${encodeURIComponent(redirectUri)}`);
+      if (!response.ok) throw new Error('Failed to get auth URL');
+      const { url } = await response.json();
+      
+      window.open(url, 'oauth_popup', 'width=600,height=700');
+    } catch (error) {
+      console.error('OAuth error:', error);
+      alert('Failed to initiate Google Login');
+    }
+  };
+
   const handleExit = () => {
+    setAppMode('landing');
     setSelectedModel(null);
     setHasApiKey(false);
     setResultImage(null);
@@ -235,6 +300,7 @@ function App() {
     setCharacterDetails([]);
     setConsistencyMode(false);
     setManualApiKey('');
+    setFmGeneratedPages([]);
   };
 
   const handleImagesChange = (newImages: string[]) => {
@@ -268,7 +334,7 @@ function App() {
   const handleGenerate = async () => {
     // Force API key selection for any model if not already selected
     if (selectedModel && !hasApiKey) {
-      if (window.aistudio) handleSelectKey();
+      setHasApiKey(false);
       return;
     }
 
@@ -307,8 +373,19 @@ function App() {
         setHistory(prev => [...prev, result.imageUrl!]);
         setReaderPageIndex(history.length); // Set to the new page index (current length is index of next item)
         setStatus(GenerationStatus.SUCCESS);
+        
+        // Calculate input token cost
+        let promptText = (styleName || '') + (dialogue || '') + layoutType;
+        characterDetails.forEach(c => promptText += (c.description || '') + (c.dialogue || ''));
+        const textTokens = promptText.length / 4;
+        const imageTokens = (userImages.length + (refImage ? 1 : 0) + (previousPageImage ? 1 : 0)) * 258;
+        const totalTokens = textTokens + imageTokens;
+        const inputCost = (totalTokens / 1000000) * (selectedModel === 'gemini-3-pro-image-preview' ? 2.00 : 0.50);
+
         if (selectedModel === 'gemini-3-pro-image-preview') {
-          setSessionCost(prev => prev + PRO_IMAGE_COST);
+          setSessionCost(prev => prev + PRO_IMAGE_COST + inputCost);
+        } else {
+          setSessionCost(prev => prev + FLASH_IMAGE_COST + inputCost);
         }
       }
     } catch (err: any) {
@@ -333,13 +410,231 @@ function App() {
     }
   };
 
-  // -- Render 1: Model Selector --
+  const handleGenerateFullManga = async (params: FullMangaParams) => {
+    if (selectedModel && !hasApiKey) {
+      setHasApiKey(false);
+      return;
+    }
+
+    setStatus(GenerationStatus.GENERATING);
+    setGenerationProgress(0);
+    setErrorMsg(null);
+    setFmGeneratedPages([]);
+
+    try {
+      let previousPageImage: string | undefined = undefined;
+      const newPages: string[] = [];
+
+      for (let i = 0; i < params.pageCount; i++) {
+        const result = await generateFullMangaPage({
+          model: selectedModel!,
+          apiKey: manualApiKey || undefined,
+          params,
+          pageIndex: i,
+          previousPageImage
+        });
+
+        if (result.imageUrl) {
+          newPages.push(result.imageUrl);
+          setFmGeneratedPages([...newPages]);
+          previousPageImage = result.imageUrl;
+          
+          // Calculate input token cost
+          let promptText = params.storyIntro + params.storyBody + params.storyConclusion + params.setting + params.tone + params.artType;
+          params.characters.forEach(c => promptText += c.name + c.traits);
+          params.pages.forEach(p => promptText += p.action);
+          const textTokens = promptText.length / 4;
+          const imageTokens = (params.characters.length + (previousPageImage ? 1 : 0)) * 258;
+          const totalTokens = textTokens + imageTokens;
+          const inputCost = (totalTokens / 1000000) * (selectedModel === 'gemini-3-pro-image-preview' ? 2.00 : 0.50);
+
+          if (selectedModel === 'gemini-3-pro-image-preview') {
+            setSessionCost(prev => prev + PRO_IMAGE_COST + inputCost);
+          } else {
+            setSessionCost(prev => prev + FLASH_IMAGE_COST + inputCost);
+          }
+        }
+        setGenerationProgress(((i + 1) / params.pageCount) * 100);
+      }
+      
+      // Add to history
+      const newBook: import('./types').FullMangaBook = {
+        id: Date.now().toString(),
+        title: params.storyIntro.substring(0, 30) + (params.storyIntro.length > 30 ? '...' : '') || `Manga #${fullMangaHistory.length + 1}`,
+        pages: newPages,
+        timestamp: Date.now()
+      };
+      setFullMangaHistory(prev => [newBook, ...prev]);
+      
+      setStatus(GenerationStatus.SUCCESS);
+      setGenerationProgress(undefined);
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || "Full Manga generation failed.");
+      setStatus(GenerationStatus.ERROR);
+      setGenerationProgress(undefined);
+      if (err.message.includes("API Key") && selectedModel) {
+        setHasApiKey(false);
+      }
+    }
+  };
+
+  // -- Render 0: Setup Page --
+  if (appMode === 'setup' || isAuthChecking) {
+    if (isAuthChecking) {
+      return <div className="h-screen w-full flex items-center justify-center bg-gray-50 font-comic text-2xl">LOADING...</div>;
+    }
+
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-dots p-4">
+        <div className="max-w-md w-full bg-white border-4 border-black shadow-[12px_12px_0_#000] p-8 relative">
+          <div className="text-center mb-8">
+             <h2 className="text-5xl font-comic text-black mb-2 transform -rotate-2">WELCOME</h2>
+             <p className="font-bold text-gray-600 max-w-xs mx-auto">
+               Complete setup to start generating manga.
+             </p>
+          </div>
+          
+          <div className="space-y-6">
+            {/* Step 1: Google Login */}
+            <div className={`p-4 border-2 border-black ${user ? 'bg-green-100' : 'bg-gray-50'}`}>
+              <h3 className="font-comic text-xl mb-2">1. Google Login</h3>
+              {user ? (
+                <div className="flex items-center gap-2 font-bold text-green-700">
+                  <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-black">
+                    <img src={user.picture} alt="Profile" />
+                  </div>
+                  Logged in as {user.name}
+                </div>
+              ) : (
+                <button 
+                  onClick={handleGoogleLogin}
+                  className="w-full py-3 bg-white hover:bg-gray-100 text-black font-bold border-2 border-black shadow-comic transition-all flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                  </svg>
+                  Sign in with Google
+                </button>
+              )}
+            </div>
+
+            {/* Step 2: API Key */}
+            <div className={`p-4 border-2 border-black ${manualApiKey.startsWith('AIza') ? 'bg-green-100' : 'bg-gray-50'}`}>
+              <h3 className="font-comic text-xl mb-2">2. Gemini API Key</h3>
+              <div className="relative mb-2">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Key className="h-5 w-5 text-gray-400" />
+                </div>
+                <input
+                  type="password"
+                  value={manualApiKey}
+                  onChange={(e) => setManualApiKey(e.target.value)}
+                  placeholder="Enter Gemini API Key (AIza...)"
+                  className="w-full pl-10 pr-3 py-3 border-2 border-black font-mono focus:shadow-[4px_4px_0_#000] outline-none transition-all"
+                />
+              </div>
+              <div className="text-xs font-bold text-gray-600">
+                 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                    Get a free API key here &rarr;
+                 </a>
+              </div>
+            </div>
+
+            <button 
+              onClick={handleManualKeySubmit}
+              disabled={!user || !manualApiKey.startsWith('AIza')}
+              className={`w-full py-4 font-comic text-2xl border-2 border-black transition-all ${(!user || !manualApiKey.startsWith('AIza')) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-yellow-400 hover:bg-yellow-300 text-black shadow-comic hover:shadow-comic-hover active:shadow-comic-active'}`}
+            >
+              ENTER STUDIO
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -- Render 1: Landing Page --
+  if (appMode === 'landing') {
+    return (
+      <div className="h-screen w-full bg-white flex flex-col md:flex-row relative overflow-hidden">
+        {/* Left: Full Manga */}
+        <button 
+          onClick={() => setAppMode('full-manga')}
+          className="relative flex-1 h-1/2 md:h-full group overflow-hidden hover:flex-[1.3] transition-all duration-500 border-b-4 md:border-b-0 md:border-r-4 border-black bg-white"
+        >
+          <div className="absolute inset-0 bg-dots opacity-20 group-hover:opacity-40 transition-opacity" />
+          <div className="absolute inset-0 bg-blue-300/10 group-hover:bg-blue-300/40 transition-colors" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-8 z-10">
+            <div className="bg-black text-white p-4 rounded-full mb-6 group-hover:scale-110 transition-transform border-4 border-white shadow-comic">
+               <BookOpen className="w-12 h-12" />
+            </div>
+            <h2 className="text-5xl md:text-7xl font-comic text-black uppercase transform -rotate-3" style={{ textShadow: '4px 4px 0 #fff, 8px 8px 0 #000' }}>
+              Full Manga
+            </h2>
+            <div className="mt-8 bg-white border-2 border-black p-4 shadow-comic transform rotate-2 max-w-xs">
+              <p className="font-comic text-xl text-black mb-2">THE STORYTELLER!</p>
+              <ul className="text-sm font-bold space-y-1 font-mono text-left">
+                <li>• Generate entire stories</li>
+                <li>• Define characters & traits</li>
+                <li>• Multi-page generation</li>
+              </ul>
+            </div>
+          </div>
+        </button>
+
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none">
+          <div className="bg-black text-white font-comic text-4xl px-6 py-4 border-4 border-white shadow-[8px_8px_0_#000] transform rotate-12">
+            OR
+          </div>
+        </div>
+
+        {/* Right: Manual Page-by-Page */}
+        <button 
+          onClick={() => setAppMode('manual')}
+          className="relative flex-1 h-1/2 md:h-full group overflow-hidden hover:flex-[1.3] transition-all duration-500 bg-white"
+        >
+          <div className="absolute inset-0 opacity-10 group-hover:opacity-30 transition-opacity" 
+               style={{ backgroundImage: 'linear-gradient(45deg, #000 25%, transparent 25%, transparent 75%, #000 75%, #000)', backgroundSize: '20px 20px', backgroundPosition: '0 0, 10px 10px' }} />
+          <div className="absolute inset-0 bg-green-300/10 group-hover:bg-green-300/40 transition-colors" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-8 z-10">
+            <div className="bg-black text-white p-4 rounded-full mb-6 group-hover:scale-110 transition-transform border-4 border-white shadow-comic">
+               <PenTool className="w-12 h-12" />
+            </div>
+            <h2 className="text-5xl md:text-7xl font-comic text-black uppercase transform rotate-3" style={{ textShadow: '4px 4px 0 #fff, 8px 8px 0 #000' }}>
+              Manual
+            </h2>
+            <div className="mt-8 bg-white border-2 border-black p-4 shadow-comic transform -rotate-2 max-w-xs">
+              <p className="font-comic text-xl text-black mb-2">THE CRAFTSMAN!</p>
+              <ul className="text-sm font-bold space-y-1 font-mono text-left">
+                <li>• Page-by-page control</li>
+                <li>• Fine-tune layouts</li>
+                <li>• Edit and refine</li>
+              </ul>
+            </div>
+          </div>
+        </button>
+      </div>
+    );
+  }
+
+  // -- Render 2: Model Selector --
   if (!selectedModel) {
     return (
       <div className="h-screen w-full bg-white flex flex-col md:flex-row relative overflow-hidden">
+        <button 
+          onClick={() => setAppMode('landing')}
+          className="absolute top-4 left-4 z-30 bg-white border-2 border-black p-2 shadow-comic hover:translate-y-1 transition-transform flex items-center gap-1 text-sm font-bold"
+        >
+          <ChevronLeft className="w-4 h-4" /> BACK
+        </button>
+
         {/* Left: Flash Model */}
         <button 
-          onClick={() => setSelectedModel('gemini-2.5-flash-image')}
+          onClick={() => setSelectedModel('gemini-3.1-flash-image-preview')}
           className="relative flex-1 h-1/2 md:h-full group overflow-hidden hover:flex-[1.3] transition-all duration-500 border-b-4 md:border-b-0 md:border-r-4 border-black bg-white"
         >
           <div className="absolute inset-0 bg-dots opacity-20 group-hover:opacity-40 transition-opacity" />
@@ -349,11 +644,14 @@ function App() {
                <Zap className="w-12 h-12" />
             </div>
             <h2 className="text-6xl md:text-8xl font-comic text-black uppercase transform -rotate-3" style={{ textShadow: '4px 4px 0 #fff, 8px 8px 0 #000' }}>
-              Flash
+              Flash 2
             </h2>
+            <div className="absolute top-4 right-4 bg-red-500 text-white font-bold px-3 py-1 transform rotate-12 border-2 border-black shadow-comic">
+              RECOMMENDED
+            </div>
             <div className="mt-8 bg-white border-2 border-black p-4 shadow-comic transform rotate-2 max-w-xs">
               <p className="font-comic text-xl text-black mb-2">THE SPEEDSTER!</p>
-              <ul className="text-sm font-bold space-y-1 font-mono">
+              <ul className="text-sm font-bold space-y-1 font-mono text-left">
                 <li>• Fast Generation</li>
                 <li>• Free Tier Avail.</li>
                 <li>• 3 Image Limit</li>
@@ -385,7 +683,7 @@ function App() {
             </h2>
             <div className="mt-8 bg-white border-2 border-black p-4 shadow-comic transform -rotate-2 max-w-xs">
               <p className="font-comic text-xl text-black mb-2">THE ARTIST!</p>
-              <ul className="text-sm font-bold space-y-1 font-mono">
+              <ul className="text-sm font-bold space-y-1 font-mono text-left">
                 <li>• Max Quality</li>
                 <li>• Paid API Key</li>
                 <li>• 14 Image Limit</li>
@@ -397,7 +695,7 @@ function App() {
     );
   }
 
-  // -- Render 2: API Key Auth --
+  // -- Render 3: API Key Auth (Fallback if somehow bypassed) --
   if (selectedModel && !isCheckingKey && !hasApiKey) {
     const isPro = selectedModel === 'gemini-3-pro-image-preview';
     const isAIStudio = !!window.aistudio;
@@ -424,53 +722,60 @@ function App() {
              <div className="flex justify-between items-center font-bold">
                 <span>PER IMAGE:</span>
                 <span className="text-red-500">
-                  {isPro ? `$${PRO_IMAGE_COST}` : 'FREE TIER AVAIL.'}
+                  {isPro ? `$${PRO_IMAGE_COST}` : `$${FLASH_IMAGE_COST}`}
                 </span>
              </div>
           </div>
           
-          {isAIStudio ? (
+          <div className="space-y-4">
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Key className="h-5 w-5 text-gray-400" />
+              </div>
+              <input
+                type="password"
+                value={manualApiKey}
+                onChange={(e) => setManualApiKey(e.target.value)}
+                placeholder="Enter Gemini API Key (AIza...)"
+                className="w-full pl-10 pr-3 py-3 border-2 border-black font-mono focus:shadow-[4px_4px_0_#000] outline-none transition-all"
+              />
+            </div>
+            
             <button 
-              onClick={handleSelectKey}
+              onClick={handleManualKeySubmit}
               className="w-full py-4 bg-yellow-400 hover:bg-yellow-300 text-black font-comic text-2xl border-2 border-black shadow-comic hover:shadow-comic-hover active:shadow-comic-active transition-all"
             >
-              SELECT API KEY
+              START SESSION
             </button>
-          ) : (
-            <div className="space-y-4">
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Key className="h-5 w-5 text-gray-400" />
-                </div>
-                <input
-                  type="password"
-                  value={manualApiKey}
-                  onChange={(e) => setManualApiKey(e.target.value)}
-                  placeholder="Enter Gemini API Key (AIza...)"
-                  className="w-full pl-10 pr-3 py-3 border-2 border-black font-mono focus:shadow-[4px_4px_0_#000] outline-none transition-all"
-                />
-              </div>
-              
-              <button 
-                onClick={handleManualKeySubmit}
-                className="w-full py-4 bg-yellow-400 hover:bg-yellow-300 text-black font-comic text-2xl border-2 border-black shadow-comic hover:shadow-comic-hover active:shadow-comic-active transition-all"
-              >
-                START SESSION
-              </button>
-              
-              <div className="text-center mt-4">
-                 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-xs font-bold text-blue-600 hover:underline">
-                    GET A FREE API KEY HERE &rarr;
-                 </a>
-              </div>
+            
+            <div className="text-center mt-4">
+               <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-xs font-bold text-blue-600 hover:underline">
+                  GET A FREE API KEY HERE &rarr;
+               </a>
             </div>
-          )}
+          </div>
         </div>
       </div>
     );
   }
 
-  // -- Render 3: Main Editor --
+  // -- Render 4: Main Editor --
+  if (appMode === 'full-manga') {
+    return (
+      <FullMangaEditor 
+        selectedModel={selectedModel}
+        sessionCost={sessionCost}
+        onExit={handleExit}
+        onGenerate={handleGenerateFullManga}
+        status={status}
+        generatedPages={fmGeneratedPages}
+        errorMsg={errorMsg}
+        history={fullMangaHistory}
+        progress={generationProgress}
+      />
+    );
+  }
+
   const isGenerating = status === GenerationStatus.GENERATING;
   const isPro = selectedModel === 'gemini-3-pro-image-preview';
   const accentColor = isPro ? 'bg-pink-400' : 'bg-yellow-400';
@@ -480,7 +785,7 @@ function App() {
     <div className="h-screen flex flex-col bg-gray-50 overflow-hidden text-black font-sans">
       <Header 
         modelName={selectedModel} 
-        sessionCost={isPro ? sessionCost : undefined} 
+        sessionCost={sessionCost} 
         onModelClick={handleExit}
       />
 

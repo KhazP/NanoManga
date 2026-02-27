@@ -267,3 +267,177 @@ export const generateMangaPage = async (params: MangaGenerationParams): Promise<
     throw new Error(errorMessage);
   }
 };
+
+export const generateFullMangaPage = async ({
+  model,
+  apiKey,
+  params,
+  pageIndex,
+  previousPageImage
+}: {
+  model: string;
+  apiKey?: string;
+  params: any;
+  pageIndex: number;
+  previousPageImage?: string;
+}): Promise<GenerationResult> => {
+  try {
+    const key = apiKey || process.env.API_KEY;
+    if (!key) {
+      throw new Error("API Key is missing. Please select or enter a valid API Key.");
+    }
+
+    const ai = new GoogleGenAI({ apiKey: key });
+    const parts: any[] = [];
+
+    // Add Character Images
+    params.characters.forEach((char: any, idx: number) => {
+      if (char.image) {
+        parts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: cleanBase64(char.image),
+          },
+        });
+      }
+    });
+
+    // Add Previous Page for consistency
+    if (previousPageImage) {
+      parts.push({
+        inlineData: {
+          mimeType: 'image/png',
+          data: cleanBase64(previousPageImage),
+        },
+      });
+    }
+
+    // Determine what part of the story this page represents
+    const totalPages = params.pageCount;
+    const pageConfig = params.pages[pageIndex];
+    
+    let storyFocus = `OVERALL STORY ARC:
+    - Introduction: ${params.storyIntro}
+    - Body/Conflict: ${params.storyBody}
+    - Conclusion: ${params.storyConclusion}
+    
+    `;
+    
+    if (totalPages === 1) {
+      storyFocus += `CURRENT PAGE FOCUS: This single page must encapsulate the entire story.`;
+    } else {
+      const progress = pageIndex / (totalPages - 1);
+      if (progress < 0.33) {
+        storyFocus += `CURRENT PAGE FOCUS: This page covers the INTRODUCTION.`;
+      } else if (progress < 0.66) {
+        storyFocus += `CURRENT PAGE FOCUS: This page covers the MAIN CONFLICT/BODY.`;
+      } else {
+        storyFocus += `CURRENT PAGE FOCUS: This page covers the CONCLUSION/RESOLUTION.`;
+      }
+    }
+
+    if (pageConfig && pageConfig.action) {
+      storyFocus += `\n\nSPECIFIC ACTION FOR THIS PAGE:\n${pageConfig.action}`;
+    }
+
+    const charDescriptions = params.characters.map((c: any) => 
+      `- ${c.name}: ${c.traits}`
+    ).join('\n');
+
+    // Color logic
+    let colorInstruction = params.colorScheme === 'Color' ? 'Full Color' : 'Black and white with screentone shading';
+    if (pageConfig && pageConfig.colorOverride !== 'Auto') {
+       colorInstruction = pageConfig.colorOverride === 'Color' ? 'Full Color' : 'Black and white with screentone shading';
+    }
+
+    // Speech bubbles logic
+    let bubbleInstruction = 'Include empty speech bubbles where characters are speaking.';
+    if (pageConfig && pageConfig.speechBubbles !== 'Auto') {
+       if (pageConfig.speechBubbles === 'Empty') bubbleInstruction = 'Include EMPTY speech bubbles (no text inside).';
+       else if (pageConfig.speechBubbles === 'With Text') bubbleInstruction = 'Include speech bubbles WITH TEXT inside them.';
+       else if (pageConfig.speechBubbles === 'None') bubbleInstruction = 'DO NOT include any speech bubbles.';
+       else if (pageConfig.speechBubbles === 'One Text Bubble') bubbleInstruction = 'Include exactly ONE speech bubble with text, others empty or none.';
+    }
+
+    // Layout logic
+    let layoutInstruction = 'Create a traditional multi-panel manga page layout (4-6 panels).';
+    if (pageConfig && pageConfig.layout !== 'Auto') {
+       if (pageConfig.layout === 'Splash') layoutInstruction = 'Create a SINGLE SPLASH PAGE (one large illustration, no panels).';
+       else if (pageConfig.layout === 'Grid') layoutInstruction = 'Create a strict grid layout (e.g., 4-koma or 2x2).';
+       else if (pageConfig.layout === 'Dynamic') layoutInstruction = 'Create a highly dynamic, angled panel layout with characters breaking out of frames.';
+    }
+
+    // Consistency logic
+    let consistencyInstruction = previousPageImage ? 'Maintain visual consistency with the previous page provided.' : '';
+    if (pageConfig && pageConfig.consistency === 'Same Scene') {
+       consistencyInstruction = previousPageImage ? 'This is the EXACT SAME SCENE as the previous page. Keep the background, lighting, and character positions highly consistent.' : '';
+    } else if (pageConfig && pageConfig.consistency === 'New Scene') {
+       consistencyInstruction = 'This is a NEW SCENE. Do not copy the background from the previous page.';
+    }
+
+    const prompt = `You are a master manga artist creating page ${pageIndex + 1} of a ${totalPages}-page manga.
+
+    MANGA CONTINUITY & WORLD:
+    - Setting: ${params.setting || 'Not specified'}
+    - Tone/Vibe: ${params.tone || 'Not specified'}
+    - Art Style: ${params.artType || 'Standard Manga'}
+    
+    STORY CONTEXT:
+    ${storyFocus}
+    
+    CHARACTERS IN THIS STORY:
+    ${charDescriptions}
+    (Use the provided reference images for these characters if available).
+    
+    ${consistencyInstruction}
+    
+    PAGE-SPECIFIC INSTRUCTIONS:
+    - Color: ${colorInstruction}
+    - Layout: ${layoutInstruction}
+    - Speech Bubbles: ${bubbleInstruction}
+    - Ensure clear visual flow from top-right to bottom-left (traditional manga reading direction).
+    
+    Generate ONLY the final image.`;
+
+    parts.push({ text: prompt });
+
+    const config: any = {
+      imageConfig: {
+        aspectRatio: "3:4", // Standard manga page ratio
+        imageSize: params.resolution || "1K"
+      }
+    };
+
+    const response = await ai.models.generateContent({
+      model: model,
+      contents: { parts },
+      config: config
+    });
+
+    let generatedImageUrl: string | undefined;
+    let generatedText: string | undefined;
+
+    if (response.candidates && response.candidates[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          generatedImageUrl = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+        } else if (part.text) {
+          generatedText = part.text;
+        }
+      }
+    }
+
+    if (!generatedImageUrl) {
+      throw new Error("No image was generated.");
+    }
+
+    return {
+      imageUrl: generatedImageUrl,
+      text: generatedText
+    };
+
+  } catch (error: any) {
+    console.error("Gemini API Error (Full Manga):", error);
+    throw new Error(error.message || "Failed to generate manga page.");
+  }
+};

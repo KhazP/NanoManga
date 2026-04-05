@@ -5,6 +5,8 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import path from 'path';
+import { GoogleGenAI } from '@google/genai';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -15,6 +17,34 @@ app.use(express.json());
 app.use(cookieParser());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-for-dev';
+
+app.get('/api/generate-og', async (req, res) => {
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: 'A dynamic, high-quality anime manga style promotional banner for a web application called Nano Manga Pro. It features a split screen showing a blank manga page on one side and a fully illustrated, action-packed manga page on the other, with a glowing digital pen. Vibrant colors, cinematic lighting, professional.',
+      config: {
+        imageConfig: {
+          aspectRatio: '16:9'
+        }
+      }
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        const base64Data = part.inlineData.data;
+        const buffer = Buffer.from(base64Data, 'base64');
+        fs.mkdirSync(path.join(process.cwd(), 'public'), { recursive: true });
+        fs.writeFileSync(path.join(process.cwd(), 'public', 'og-image.png'), buffer);
+        return res.send('Successfully saved to public/og-image.png');
+      }
+    }
+    res.status(500).send('No image generated');
+  } catch (e: any) {
+    res.status(500).send(e.message);
+  }
+});
 
 // API Routes
 app.get('/api/auth/url', (req, res) => {
@@ -132,7 +162,7 @@ async function startServer() {
   } else {
     app.use(express.static('dist'));
     // SPA fallback
-    app.get('*', (req, res) => {
+    app.get('*all', (req, res) => {
       res.sendFile(path.resolve('dist/index.html'));
     });
   }
